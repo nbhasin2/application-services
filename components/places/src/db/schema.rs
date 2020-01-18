@@ -18,7 +18,7 @@ use crate::types::SyncStatus;
 use rusqlite::NO_PARAMS;
 use sql_support::ConnExt;
 
-const VERSION: i64 = 10;
+const VERSION: i64 = 11;
 
 // Shared schema and temp tables for the read-write and Sync connections.
 const CREATE_SHARED_SCHEMA_SQL: &str = include_str!("../../sql/create_shared_schema.sql");
@@ -226,6 +226,22 @@ fn upgrade(db: &PlacesDb, from: i64) -> Result<()> {
             // Add an index for synced bookmark URLs.
             "CREATE INDEX IF NOT EXISTS moz_bookmarks_synced_urls
              ON moz_bookmarks_synced(placeId)",
+        ],
+        || Ok(()),
+    )?;
+    migration(
+        db,
+        10,
+        11,
+        &[
+            // Migrate synced keywords into their own table, so that they're
+            // available via `bookmarks_get_url_for_keyword` before the next
+            // sync.
+            "INSERT OR IGNORE INTO moz_keywords(keyword, place_id)
+             SELECT keyword, placeId
+             FROM moz_bookmarks_synced
+             WHERE placeId NOT NULL AND
+                   keyword NOT NULL",
         ],
         || Ok(()),
     )?;

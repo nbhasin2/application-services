@@ -27,3 +27,6 @@
   longer cause syncs to fail ([#2750](https://github.com/mozilla/application-services/pull/2750)),
   and bookmarks with duplicate or mismatched tags are reuploaded
   ([#2774](https://github.com/mozilla/application-services/pull/2774)).
+- Improve handling of bookmark search keywords. Keywords are now imported
+  correctly from Fennec, and signing out of Sync in Firefox for iOS no longer
+  loses keywords ([#2501](https://github.com/mozilla/application-services/pull/2501)).
