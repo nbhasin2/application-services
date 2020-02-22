@@ -292,7 +292,7 @@ pub extern "C" fn places_delete_place(handle: u64, url: FfiStr<'_>, error: &mut 
             }
         };
         if let Some(guid) = guid {
-            storage::history::delete_place_by_guid(conn, &guid)?;
+            storage::history::delete_all_visits_for_guid(conn, &guid)?;
         }
         Ok(())
     })

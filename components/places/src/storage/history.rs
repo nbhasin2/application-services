@@ -211,24 +211,108 @@ pub fn href_to_guid(db: &PlacesDb, url: &str) -> Result<Option<SyncGuid>> {
 
 /// Internal function for deleting a place, creating a tombstone if necessary.
 /// Assumes a transaction is already set up by the caller.
-fn do_delete_place_by_guid(db: &PlacesDb, guid: &SyncGuid) -> Result<()> {
+fn delete_all_visits_for_guid_in_tx(db: &PlacesDb, guid: &SyncGuid) -> Result<()> {
     // We only create tombstones for history which exists and with sync_status
     // == SyncStatus::Normal
-    let sql = "INSERT OR IGNORE INTO moz_places_tombstones (guid)
-               SELECT guid FROM moz_places
-               WHERE guid = :guid AND sync_status = :status";
-    db.execute_named_cached(sql, &[(":guid", guid), (":status", &SyncStatus::Normal)])?;
-    // and try the delete - it might not exist, but that's ok.
-    let delete_sql = "DELETE FROM moz_places WHERE guid = :guid";
-    db.execute_named_cached(delete_sql, &[(":guid", guid)])?;
+    let to_clean = db.conn().try_query_row(
+        "SELECT id,
+                (foreign_count != 0) AS has_foreign,
+                1 as has_visits,
+                sync_status
+        FROM moz_places
+        WHERE guid = :guid",
+        &[(":guid", guid)],
+        PageToClean::from_row,
+        true,
+    )?;
+    match to_clean {
+        Some(PageToClean {
+            id,
+            has_foreign: true,
+            sync_status: SyncStatus::Normal,
+            ..
+        }) => {
+            // If our page is syncing, and has foreign key references (like
+            // bookmarks, keywords, and tags), we can't delete its row from
+            // `moz_places` directly; that would cause a constraint violation.
+            // Instead, we must insert tombstones for all visits, and then
+            // delete just the visits, keeping the page in place (pun
+            // most definitely intended).
+            db.execute_named_cached(
+                "INSERT OR IGNORE INTO moz_historyvisit_tombstones(place_id, visit_date)
+                 SELECT place_id, visit_date
+                 FROM moz_historyvisits
+                 WHERE place_id = :id",
+                &[(":id", &id)],
+            )?;
+            delete_all_visits_for_place_id(db, id)?;
+        }
+        Some(PageToClean {
+            id,
+            has_foreign: false,
+            sync_status: SyncStatus::Normal,
+            ..
+        }) => {
+            // However, if our page is syncing and _doesn't_ have any foreign
+            // key references, we can delete it from `moz_places` outright, and
+            // write a tombstone for the Place instead of all the visits.
+            db.execute_named_cached(
+                "INSERT OR IGNORE INTO moz_places_tombstones (guid)
+                 VALUES(:guid)",
+                &[(":guid", guid)],
+            )?;
+            delete_place_with_id(db, id)?;
+        }
+        Some(PageToClean {
+            id,
+            has_foreign: true,
+            ..
+        }) => {
+            // If our page has foreign key references but _isn't_ syncing,
+            // we still can't delete it; we must delete its visits. But we
+            // don't need to write any tombstones for the visits.
+            delete_all_visits_for_place_id(db, id)?;
+        }
+        Some(PageToClean {
+            id,
+            has_foreign: false,
+            ..
+        }) => {
+            // And, finally, the easiest case: not syncing, and no foreign
+            // key references, so just delete the Place.
+            delete_place_with_id(db, id)?;
+        }
+        None => {}
+    }
     delete_pending_temp_tables(db)?;
     Ok(())
 }
 
+/// Internal function for removing all visits from a Place.
+fn delete_all_visits_for_place_id(db: &PlacesDb, place_id: RowId) -> Result<()> {
+    db.execute_named_cached(
+        "DELETE FROM moz_historyvisits
+         WHERE place_id = :place_id",
+        &[(":place_id", &place_id)],
+    )?;
+    Ok(())
+}
+
+/// Internal function for deleting a Place by its ID. Note that this will throw
+/// a constraint violation if the Place has any foreign key references.
+fn delete_place_with_id(db: &PlacesDb, id: RowId) -> Result<()> {
+    db.execute_named_cached(
+        "DELETE FROM moz_places
+         WHERE id = :id",
+        &[(":id", &id)],
+    )?;
+    Ok(())
+}
+
 /// Delete a place given its guid, creating a tombstone if necessary.
-pub fn delete_place_by_guid(db: &PlacesDb, guid: &SyncGuid) -> Result<()> {
+pub fn delete_all_visits_for_guid(db: &PlacesDb, guid: &SyncGuid) -> Result<()> {
     let tx = db.begin_transaction()?;
-    let result = do_delete_place_by_guid(db, guid);
+    let result = delete_all_visits_for_guid_in_tx(db, guid);
     tx.commit()?;
     result
 }
@@ -376,7 +460,8 @@ fn delete_place_visit_at_time_in_tx(db: &PlacesDb, url: &str, visit_date: Timest
         "SELECT
             id,
             (foreign_count != 0) AS has_foreign,
-            ((last_visit_date_local + last_visit_date_remote) != 0) as has_visits
+            ((last_visit_date_local + last_visit_date_remote) != 0) as has_visits,
+            sync_status
         FROM moz_places
         WHERE id = :id",
         &[(":id", &place_id)],
@@ -446,7 +531,8 @@ pub fn delete_visits_between_in_tx(db: &PlacesDb, start: Timestamp, end: Timesta
             let query = format!(
                 "SELECT id, -- url, url_hash, guid
                     (foreign_count != 0) AS has_foreign,
-                    ((last_visit_date_local + last_visit_date_remote) != 0) as has_visits
+                    ((last_visit_date_local + last_visit_date_remote) != 0) as has_visits,
+                    sync_status
                 FROM moz_places
                 WHERE id IN ({})",
                 sql_support::repeat_sql_vars(chunk.len()),
@@ -467,6 +553,7 @@ struct PageToClean {
     id: RowId,
     has_foreign: bool,
     has_visits: bool,
+    sync_status: SyncStatus,
 }
 
 impl PageToClean {
@@ -475,6 +562,7 @@ impl PageToClean {
             id: row.get("id")?,
             has_foreign: row.get("has_foreign")?,
             has_visits: row.get("has_visits")?,
+            sync_status: row.get("sync_status")?,
         })
     }
 }
@@ -773,8 +861,6 @@ pub mod history_sync {
     }
 
     pub fn apply_synced_deletion(db: &PlacesDb, guid: &SyncGuid) -> Result<()> {
-        // Note that we don't use delete_place_by_guid because we do not want
-        // a local tombstone for this item.
         db.execute_named_cached(
             "DELETE FROM moz_places WHERE guid = :guid",
             &[(":guid", guid)],
@@ -1761,7 +1847,7 @@ mod tests {
         apply_observation(&db, obs)?;
         let guid = url_to_guid(&db, &url)?.expect("should exist");
 
-        delete_place_by_guid(&db, &guid)?;
+        delete_all_visits_for_guid(&db, &guid)?;
 
         // status was "New", so expect no tombstone.
         assert_eq!(get_tombstone_count(&db), 0);
@@ -1782,7 +1868,7 @@ mod tests {
             ),
             &[(":guid", &new_guid)],
         )?;
-        delete_place_by_guid(&db, &new_guid)?;
+        delete_all_visits_for_guid(&db, &new_guid)?;
         assert_eq!(get_tombstone_count(&db), 1);
         Ok(())
     }
@@ -2088,7 +2174,7 @@ mod tests {
         .unwrap();
 
         // Ensure some various tombstones exist
-        delete_place_by_guid(
+        delete_all_visits_for_guid(
             &conn,
             &url_to_guid(&conn, &Url::parse("http://www.example8.com/5").unwrap())
                 .unwrap()

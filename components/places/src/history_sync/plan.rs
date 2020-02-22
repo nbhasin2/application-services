@@ -290,7 +290,7 @@ mod tests {
     use crate::history_sync::ServerVisitTimestamp;
     use crate::observation::VisitObservation;
     use crate::storage::history::history_sync::fetch_visits;
-    use crate::storage::history::{apply_observation, delete_place_by_guid, url_to_guid};
+    use crate::storage::history::{apply_observation, delete_all_visits_for_guid, url_to_guid};
     use crate::types::{SyncStatus, Timestamp};
     use interrupt::NeverInterrupts;
     use serde_json::json;
@@ -1018,7 +1018,7 @@ mod tests {
         assert_eq!(get_sync(&db, &url), (SyncStatus::Normal, 1));
 
         // Delete it.
-        delete_place_by_guid(&db, &guid)?;
+        delete_all_visits_for_guid(&db, &guid)?;
 
         // should be a local tombstone.
         assert_eq!(get_tombstone_count(&db), 1);
