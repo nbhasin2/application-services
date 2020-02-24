@@ -10,6 +10,14 @@
 
 - Sourcing `libs/bootstrap-desktop.sh` is not a thing anymore. Please run `./libs/verify-desktop-environment.sh` at least once instead. ([#2769](https://github.com/mozilla/application-services/pull/2769))
 
+## Android
+
+### What's changed
+
+- There is now preliminary support for an "autoPublish" local-development workflow similar
+  to the one used when working with Fenix and android-components; see
+  [this howto guide](./docs/howtos/locally-published-components-in-fenix.md) for details.
+
 ## Push
 
 ### Breaking changes

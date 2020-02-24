@@ -232,6 +232,10 @@ internal fun checkFullMegazord(componentName: String, componentVersion: String):
         true
     } catch (e: UnsatisfiedLinkError) {
         Log.e("RustNativeSupport", "Default megazord not found: ${e.localizedMessage}")
+        if (componentVersion.contains("-LOCAL")) {
+          Log.i("RustNativeSupport", "It looks like you're using a local development build.")
+          Log.i("RustNativeSupport", "You may need to check that `rust.targets` contains the appropriate platforms.")
+        }
         false
     }
 }
